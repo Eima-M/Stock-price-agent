@@ -30,23 +30,27 @@ const analyzeStockData = (symbol: string, price: string, timestamp: string) => {
 };
 
 const formatStockReport = (stockData: any, previousData?: any[]) => {
-  const reportData = {
-    lastUpdated: new Date().toISOString(),
-    currentAnalysis: stockData,
-    history: previousData || [],
-  };
+  const report = `
+CURRENT PRICE: $${stockData.currentPrice}
+TIMESTAMP: ${stockData.timestamp}
 
-  // Add current data to history
-  reportData.history.push({
-    timestamp: stockData.timestamp,
-    price: stockData.currentPrice,
-    recommendation: stockData.recommendation,
-  });
+ANALYSIS:
+${stockData.analysis}
 
-  // Keep only last 10 entries
-  reportData.history = reportData.history.slice(-10);
+RECOMMENDATION: ${stockData.recommendation}
 
-  return JSON.stringify(reportData, null, 2);
+INVESTMENT GRADE:
+${stockData.recommendation === 'BUY' ? '🟢 BUY - Good entry point' : 
+  stockData.recommendation === 'HOLD/MONITOR' ? '🟡 HOLD/MONITOR - Watch for opportunities' : 
+  '🔍 RESEARCH - Requires further analysis'}
+
+RISK ASSESSMENT:
+${parseFloat(stockData.currentPrice) > 200 ? 'HIGH - Premium stock, higher volatility expected' :
+  parseFloat(stockData.currentPrice) > 50 ? 'MEDIUM - Moderate risk/reward profile' :
+  'LOWER - Higher growth potential but increased risk'}
+`;
+
+  return report.trim();
 };
 
 export const stockAnalyzer = createTool({

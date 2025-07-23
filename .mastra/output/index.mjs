@@ -87,6 +87,47 @@ const writeToGitHub = async (owner, repo, path, content, message) => {
     };
   }
 };
+const appendToGitHubFile = async (owner, repo, path, newContent, message) => {
+  try {
+    let existingContent = "";
+    let sha;
+    try {
+      const { data: existingFile } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path
+      });
+      if ("content" in existingFile && "sha" in existingFile) {
+        existingContent = Buffer.from(existingFile.content, "base64").toString("utf-8");
+        sha = existingFile.sha;
+      }
+    } catch (error) {
+      console.log("File doesn't exist, will create new file");
+    }
+    const separator = existingContent.trim() ? "\n\n---\n\n" : "";
+    const combinedContent = existingContent + separator + newContent;
+    const { data } = await octokit.rest.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path,
+      message,
+      content: Buffer.from(combinedContent).toString("base64"),
+      sha
+    });
+    return {
+      success: true,
+      url: data.content?.html_url,
+      sha: data.content?.sha,
+      message: `Successfully appended to file: ${path}`
+    };
+  } catch (error) {
+    console.error("GitHub API Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error occurred"
+    };
+  }
+};
 const githubWriter = createTool({
   id: "Write to GitHub Repository",
   inputSchema: z.object({
@@ -100,6 +141,27 @@ const githubWriter = createTool({
   execute: async ({ context: { owner, repo, path, content, message } }) => {
     console.log(`Writing to GitHub: ${owner}/${repo}/${path}`);
     return await writeToGitHub(owner, repo, path, content, message);
+  }
+});
+const saveStockReport = createTool({
+  id: "Save Stock Report to Repository",
+  inputSchema: z.object({
+    owner: z.string().describe("GitHub repository owner (username or organization)"),
+    repo: z.string().describe("GitHub repository name"),
+    stockSymbol: z.string().describe("Stock symbol that was analyzed"),
+    reportContent: z.string().describe("The stock analysis report content to save")
+  }),
+  description: `Automatically saves stock analysis reports to the reports.txt file in your GitHub repository. Appends new reports to existing content.`,
+  execute: async ({ context: { owner, repo, stockSymbol, reportContent } }) => {
+    console.log(`Saving stock report for ${stockSymbol} to ${owner}/${repo}/reports.txt`);
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const formattedReport = `\u{1F4CA} STOCK ANALYSIS REPORT
+Generated: ${timestamp}
+Symbol: ${stockSymbol}
+
+${reportContent}`;
+    const commitMessage = `Add stock analysis report for ${stockSymbol} - ${(/* @__PURE__ */ new Date()).toLocaleDateString()}`;
+    return await appendToGitHubFile(owner, repo, "reports.txt", formattedReport, commitMessage);
   }
 });
 
@@ -128,18 +190,22 @@ const analyzeStockData = (symbol, price, timestamp) => {
   };
 };
 const formatStockReport = (stockData, previousData) => {
-  const reportData = {
-    lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
-    currentAnalysis: stockData,
-    history: previousData || []
-  };
-  reportData.history.push({
-    timestamp: stockData.timestamp,
-    price: stockData.currentPrice,
-    recommendation: stockData.recommendation
-  });
-  reportData.history = reportData.history.slice(-10);
-  return JSON.stringify(reportData, null, 2);
+  const report = `
+CURRENT PRICE: $${stockData.currentPrice}
+TIMESTAMP: ${stockData.timestamp}
+
+ANALYSIS:
+${stockData.analysis}
+
+RECOMMENDATION: ${stockData.recommendation}
+
+INVESTMENT GRADE:
+${stockData.recommendation === "BUY" ? "\u{1F7E2} BUY - Good entry point" : stockData.recommendation === "HOLD/MONITOR" ? "\u{1F7E1} HOLD/MONITOR - Watch for opportunities" : "\u{1F50D} RESEARCH - Requires further analysis"}
+
+RISK ASSESSMENT:
+${parseFloat(stockData.currentPrice) > 200 ? "HIGH - Premium stock, higher volatility expected" : parseFloat(stockData.currentPrice) > 50 ? "MEDIUM - Moderate risk/reward profile" : "LOWER - Higher growth potential but increased risk"}
+`;
+  return report.trim();
 };
 const stockAnalyzer = createTool({
   id: "Stock Analyzer and Reporter",
@@ -153,8 +219,7 @@ const stockAnalyzer = createTool({
     const price = await getStockPrice(symbol);
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     const analysis = analyzeStockData(symbol, price, timestamp);
-    const previousData = includeHistory ? [] : void 0;
-    const report = formatStockReport(analysis, previousData);
+    const report = formatStockReport(analysis);
     return {
       analysis,
       report,
@@ -170,28 +235,43 @@ const memory = new Memory({
 });
 const stockAgent = new Agent({
   name: "Stock Agent",
-  instructions: `You are a helpful stock analysis assistant with the following capabilities:
+  instructions: `You are a helpful stock analysis assistant that automatically saves reports to the user's GitHub repository.
 
-1. **Stock Price Fetching**: Use the stockPrices tool to get current stock prices
-2. **Stock Analysis**: Use the stockAnalyzer tool to get comprehensive analysis and recommendations
-3. **GitHub Integration**: Use the githubWriter tool to save analysis reports directly to GitHub repositories
+**Your Main Capabilities:**
+1. **Stock Price Fetching**: Get current stock prices using stockPrices tool
+2. **Stock Analysis**: Generate comprehensive analysis using stockAnalyzer tool  
+3. **Automatic Report Saving**: Save all analysis to reports.txt using saveStockReport tool
 
-When a user asks about a stock:
-- First, get the stock price and analysis
-- Provide insights and recommendations
-- If requested, save the analysis to a GitHub repository file
+**Default Behavior:**
+When a user asks about a stock analysis:
+1. Get the stock price and analysis
+2. Provide insights and recommendations to the user
+3. **AUTOMATICALLY save the analysis to their GitHub repository's reports.txt file**
+4. Confirm the save operation was successful
 
-For GitHub operations:
-- Ask the user for repository details (owner/repo) if not provided
-- Suggest meaningful file paths like 'reports/stock-analysis-SYMBOL.json' or 'data/daily-reports/YYYY-MM-DD.json'
-- Use descriptive commit messages like 'Add stock analysis for SYMBOL on DATE'
+**For GitHub Operations:**
+- Always use the saveStockReport tool for saving stock analysis (it automatically appends to reports.txt)
+- Ask for repository owner and repo name if not provided in memory
+- Use descriptive formatting with timestamps and clear sections
+- Include stock symbol, price, analysis, and recommendations in the report
 
-Always be helpful and provide clear, actionable investment insights while noting that this is not financial advice.`,
+**Report Format:**
+Always format reports with:
+- Clear headers and sections
+- Stock symbol and current price
+- Analysis and recommendations  
+- Timestamp
+- Professional formatting
+
+**Important:** When users ask to "save to my repository" or similar, use the saveStockReport tool which automatically saves to reports.txt - don't ask for file paths since reports.txt is the designated file.
+
+Remember: This is not financial advice, but professional market analysis.`,
   model: openai("gpt-4o-mini"),
   tools: {
     stockPrices: stockPrices,
     stockAnalyzer,
-    githubWriter
+    githubWriter,
+    saveStockReport
   },
   memory
 });

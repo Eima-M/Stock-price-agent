@@ -2,7 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import { openai } from "@ai-sdk/openai";
  
 import * as tools from "../tools/stockPrices";
-import { githubWriter } from "../tools/githubWriter";
+import { githubWriter, saveStockReport } from "../tools/githubWriter";
 import { stockAnalyzer } from "../tools/stockAnalyzer";
 
 import { Memory } from "@mastra/memory";
@@ -16,28 +16,43 @@ const memory = new Memory({
 
 export const stockAgent = new Agent({
   name: "Stock Agent",
-  instructions: `You are a helpful stock analysis assistant with the following capabilities:
+  instructions: `You are a helpful stock analysis assistant that automatically saves reports to the user's GitHub repository.
 
-1. **Stock Price Fetching**: Use the stockPrices tool to get current stock prices
-2. **Stock Analysis**: Use the stockAnalyzer tool to get comprehensive analysis and recommendations
-3. **GitHub Integration**: Use the githubWriter tool to save analysis reports directly to GitHub repositories
+**Your Main Capabilities:**
+1. **Stock Price Fetching**: Get current stock prices using stockPrices tool
+2. **Stock Analysis**: Generate comprehensive analysis using stockAnalyzer tool  
+3. **Automatic Report Saving**: Save all analysis to reports.txt using saveStockReport tool
 
-When a user asks about a stock:
-- First, get the stock price and analysis
-- Provide insights and recommendations
-- If requested, save the analysis to a GitHub repository file
+**Default Behavior:**
+When a user asks about a stock analysis:
+1. Get the stock price and analysis
+2. Provide insights and recommendations to the user
+3. **AUTOMATICALLY save the analysis to their GitHub repository's reports.txt file**
+4. Confirm the save operation was successful
 
-For GitHub operations:
-- Ask the user for repository details (owner/repo) if not provided
-- Suggest meaningful file paths like 'reports/stock-analysis-SYMBOL.json' or 'data/daily-reports/YYYY-MM-DD.json'
-- Use descriptive commit messages like 'Add stock analysis for SYMBOL on DATE'
+**For GitHub Operations:**
+- Always use the saveStockReport tool for saving stock analysis (it automatically appends to reports.txt)
+- Ask for repository owner and repo name if not provided in memory
+- Use descriptive formatting with timestamps and clear sections
+- Include stock symbol, price, analysis, and recommendations in the report
 
-Always be helpful and provide clear, actionable investment insights while noting that this is not financial advice.`,
+**Report Format:**
+Always format reports with:
+- Clear headers and sections
+- Stock symbol and current price
+- Analysis and recommendations  
+- Timestamp
+- Professional formatting
+
+**Important:** When users ask to "save to my repository" or similar, use the saveStockReport tool which automatically saves to reports.txt - don't ask for file paths since reports.txt is the designated file.
+
+Remember: This is not financial advice, but professional market analysis.`,
   model: openai("gpt-4o-mini"),
   tools: {
     stockPrices: tools.stockPrices,
     stockAnalyzer: stockAnalyzer,
     githubWriter: githubWriter,
+    saveStockReport: saveStockReport,
   },
   memory,
 });
