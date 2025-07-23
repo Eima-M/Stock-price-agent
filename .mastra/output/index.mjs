@@ -7,6 +7,7 @@ import { Agent } from '@mastra/core/agent';
 import { openai } from '@ai-sdk/openai';
 import { createTool, isVercelTool, Tool } from '@mastra/core/tools';
 import { z, ZodFirstPartyTypeKind } from 'zod';
+import { Octokit } from '@octokit/rest';
 import { Memory } from '@mastra/memory';
 import { LibSQLStore } from '@mastra/libsql';
 import crypto, { randomUUID } from 'crypto';
@@ -23,7 +24,7 @@ import { A2AError } from '@mastra/core/a2a';
 import { ReadableStream as ReadableStream$1 } from 'stream/web';
 import { tools } from './tools.mjs';
 
-const getStockPrice = async (symbol) => {
+const getStockPrice$1 = async (symbol) => {
   const data = await fetch(
     `https://mastra-stock-data.vercel.app/api/stock-data?symbol=${symbol}`
   ).then((r) => r.json());
@@ -39,7 +40,125 @@ const stockPrices = createTool({
     console.log("Using tool to fetch stock price for", symbol);
     return {
       symbol,
-      currentPrice: await getStockPrice(symbol)
+      currentPrice: await getStockPrice$1(symbol)
+    };
+  }
+});
+
+const octokit = new Octokit({
+  auth: process.env.GITHUB_TOKEN
+  // You'll need to set this environment variable
+});
+const writeToGitHub = async (owner, repo, path, content, message) => {
+  try {
+    let sha;
+    try {
+      const { data: existingFile } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path
+      });
+      if ("sha" in existingFile) {
+        sha = existingFile.sha;
+      }
+    } catch (error) {
+      console.log("File doesn't exist, creating new file");
+    }
+    const { data } = await octokit.rest.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path,
+      message,
+      content: Buffer.from(content).toString("base64"),
+      sha
+      // Include SHA if updating existing file
+    });
+    return {
+      success: true,
+      url: data.content?.html_url,
+      sha: data.content?.sha,
+      message: `Successfully ${sha ? "updated" : "created"} file: ${path}`
+    };
+  } catch (error) {
+    console.error("GitHub API Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error occurred"
+    };
+  }
+};
+const githubWriter = createTool({
+  id: "Write to GitHub Repository",
+  inputSchema: z.object({
+    owner: z.string().describe("GitHub repository owner (username or organization)"),
+    repo: z.string().describe("GitHub repository name"),
+    path: z.string().describe("File path within the repository (e.g., 'data/stock-prices.json')"),
+    content: z.string().describe("Content to write to the file"),
+    message: z.string().describe("Commit message")
+  }),
+  description: `Writes content to a file in a GitHub repository. Can create new files or update existing ones.`,
+  execute: async ({ context: { owner, repo, path, content, message } }) => {
+    console.log(`Writing to GitHub: ${owner}/${repo}/${path}`);
+    return await writeToGitHub(owner, repo, path, content, message);
+  }
+});
+
+const getStockPrice = async (symbol) => {
+  const data = await fetch(
+    `https://mastra-stock-data.vercel.app/api/stock-data?symbol=${symbol}`
+  ).then((r) => r.json());
+  return data.prices["4. close"];
+};
+const analyzeStockData = (symbol, price, timestamp) => {
+  const numPrice = parseFloat(price);
+  let analysis = "";
+  if (numPrice > 200) {
+    analysis = "High-value stock, consider market conditions before investing.";
+  } else if (numPrice > 50) {
+    analysis = "Mid-range stock, good for diversified portfolio.";
+  } else {
+    analysis = "Lower-priced stock, potential growth opportunity.";
+  }
+  return {
+    symbol,
+    currentPrice: price,
+    timestamp,
+    analysis,
+    recommendation: numPrice > 100 ? "HOLD/MONITOR" : numPrice > 20 ? "BUY" : "RESEARCH"
+  };
+};
+const formatStockReport = (stockData, previousData) => {
+  const reportData = {
+    lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
+    currentAnalysis: stockData,
+    history: previousData || []
+  };
+  reportData.history.push({
+    timestamp: stockData.timestamp,
+    price: stockData.currentPrice,
+    recommendation: stockData.recommendation
+  });
+  reportData.history = reportData.history.slice(-10);
+  return JSON.stringify(reportData, null, 2);
+};
+const stockAnalyzer = createTool({
+  id: "Stock Analyzer and Reporter",
+  inputSchema: z.object({
+    symbol: z.string().describe("Stock symbol to analyze"),
+    includeHistory: z.boolean().optional().describe("Whether to include historical data")
+  }),
+  description: `Analyzes a stock price and generates a comprehensive report with recommendations`,
+  execute: async ({ context: { symbol, includeHistory = false } }) => {
+    console.log(`Analyzing stock: ${symbol}`);
+    const price = await getStockPrice(symbol);
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const analysis = analyzeStockData(symbol, price, timestamp);
+    const previousData = includeHistory ? [] : void 0;
+    const report = formatStockReport(analysis, previousData);
+    return {
+      analysis,
+      report,
+      formattedReport: report
     };
   }
 });
@@ -51,10 +170,28 @@ const memory = new Memory({
 });
 const stockAgent = new Agent({
   name: "Stock Agent",
-  instructions: "You are a helpful assistant that provides current stock prices. When asked about a stock, use the stock price tool to fetch the stock price.",
+  instructions: `You are a helpful stock analysis assistant with the following capabilities:
+
+1. **Stock Price Fetching**: Use the stockPrices tool to get current stock prices
+2. **Stock Analysis**: Use the stockAnalyzer tool to get comprehensive analysis and recommendations
+3. **GitHub Integration**: Use the githubWriter tool to save analysis reports directly to GitHub repositories
+
+When a user asks about a stock:
+- First, get the stock price and analysis
+- Provide insights and recommendations
+- If requested, save the analysis to a GitHub repository file
+
+For GitHub operations:
+- Ask the user for repository details (owner/repo) if not provided
+- Suggest meaningful file paths like 'reports/stock-analysis-SYMBOL.json' or 'data/daily-reports/YYYY-MM-DD.json'
+- Use descriptive commit messages like 'Add stock analysis for SYMBOL on DATE'
+
+Always be helpful and provide clear, actionable investment insights while noting that this is not financial advice.`,
   model: openai("gpt-4o-mini"),
   tools: {
-    stockPrices: stockPrices
+    stockPrices: stockPrices,
+    stockAnalyzer,
+    githubWriter
   },
   memory
 });
