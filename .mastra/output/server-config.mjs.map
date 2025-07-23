@@ -1,0 +1,1 @@
+{"version":3,"file":"server-config.mjs","sources":["../../src/index.ts"],"sourcesContent":["import { Mastra } from \"@mastra/core\";\r\n \r\nimport { stockAgent } from \"./agents/stockAgent\";\r\n \r\nexport const mastra = new Mastra({\r\n  agents: { stockAgent },\r\n});"],"names":[],"mappings":"AAIO,MAAM,SAAS;;;;"}
